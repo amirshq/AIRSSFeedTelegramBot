@@ -1,0 +1,14 @@
+[Unit]
+Description=AI News Telegram Bot
+After=network.target redis.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai-news-bot
+ExecStart=/opt/ai-news-bot/venv/bin/python main.py
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/ai-news-bot/.env
+
+[Install]
+WantedBy=multi-user.target
