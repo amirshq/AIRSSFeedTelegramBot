@@ -274,49 +274,94 @@ async def cmd_digest_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ---------------------------------------------------------------------------
 # /github_trending
 # ---------------------------------------------------------------------------
-
 async def cmd_github_trending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetch trending AI/ML GitHub repos from the past 2 weeks."""
+    """Fetch trending AI/ML GitHub repos from GitHub trending page."""
     await _reply(update, escape_mdv2("⏳ Fetching trending GitHub repos..."))
 
     try:
-        since = (datetime.now() - timedelta(weeks=2)).strftime("%Y-%m-%d")
-
-        queries = [
-            "artificial+intelligence",
-            "large+language+model",
-            "machine+learning",
-            "LLM",
+        trending_urls = [
+            "https://github.com/trending?since=weekly&spoken_language_code=en",
+            "https://github.com/trending/python?since=weekly",
         ]
 
-        seen: set[int] = set()
+        seen: set[str] = set()
         repos: list[dict] = []
 
+        ai_keywords = [
+            "ai", "llm", "gpt", "claude", "agent", "ml", "model",
+            "neural", "transformer", "inference", "embedding", "rag",
+            "diffusion", "vision", "nlp", "openai", "anthropic", "gemini",
+            "copilot", "code", "automation", "workflow", "prompt"
+        ]
+
         async with aiohttp.ClientSession() as session:
-            for q in queries:
-                url = (
-                    f"https://api.github.com/search/repositories"
-                    f"?q={q}+pushed:>{since}"
-                    f"&sort=stars&order=desc&per_page=5"
-                )
-                headers = {"Accept": "application/vnd.github+json"}
+            for url in trending_urls:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    "Accept": "text/html,application/xhtml+xml"
+                }
                 async with session.get(url, headers=headers) as resp:
                     if resp.status != 200:
-                        logger.warning("GitHub API returned %d for query %s", resp.status, q)
                         continue
-                    data = await resp.json()
-                    for repo in data.get("items", []):
-                        if repo["id"] not in seen:
-                            seen.add(repo["id"])
-                            repos.append(repo)
+                    html = await resp.text()
 
+                    # Extract repo names from trending page
+                    import re
+                    repo_pattern = re.findall(
+                        r'href="/([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)"[^>]*>\s*\n\s*<span[^>]*>[^<]*</span>',
+                        html
+                    )
+
+                    # Alternative: find article/repo blocks
+                    article_pattern = re.findall(
+                        r'<article[^>]*>.*?href="/([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)".*?</article>',
+                        html, re.DOTALL
+                    )
+
+                    all_repos = list(dict.fromkeys(article_pattern + repo_pattern))
+
+                    async with aiohttp.ClientSession() as api_session:
+                        for repo_path in all_repos[:20]:
+                            if repo_path in seen:
+                                continue
+                            seen.add(repo_path)
+
+                            api_url = f"https://api.github.com/repos/{repo_path}"
+                            api_headers = {"Accept": "application/vnd.github+json"}
+                            try:
+                                async with api_session.get(api_url, headers=api_headers) as api_resp:
+                                    if api_resp.status != 200:
+                                        continue
+                                    data = await api_resp.json()
+
+                                    # Filter for AI/ML relevance
+                                    desc = (data.get("description") or "").lower()
+                                    name = (data.get("full_name") or "").lower()
+                                    topics = [t.lower() for t in data.get("topics", [])]
+                                    all_text = desc + name + " ".join(topics)
+
+                                    if any(kw in all_text for kw in ai_keywords):
+                                        repos.append(data)
+                            except Exception:
+                                continue
+
+        # Sort by stars
         repos = sorted(repos, key=lambda x: x["stargazers_count"], reverse=True)[:10]
+
+        if not repos:
+            # Fallback: just fetch top starred AI repos of all time trending this week
+            async with aiohttp.ClientSession() as session:
+                url = "https://api.github.com/search/repositories?q=topic:llm+topic:ai-agents&sort=stars&order=desc&per_page=10"
+                headers = {"Accept": "application/vnd.github+json"}
+                async with session.get(url, headers=headers) as resp:
+                    data = await resp.json()
+                    repos = data.get("items", [])[:10]
 
         if not repos:
             await _reply(update, escape_mdv2("❌ No trending repos found."))
             return
 
-        lines = ["⭐ *Trending AI/ML GitHub Repos* — past 2 weeks\n"]
+        lines = ["⭐ *Trending AI/ML GitHub Repos* — this week\n"]
 
         for i, repo in enumerate(repos, 1):
             stars = repo["stargazers_count"]
