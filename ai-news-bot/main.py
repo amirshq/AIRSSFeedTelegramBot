@@ -55,6 +55,7 @@ async def main() -> None:
     app.add_handler(CommandHandler("set_time", handlers.cmd_set_time))
     app.add_handler(CommandHandler("status", handlers.cmd_status))
     app.add_handler(CommandHandler("digest_now", handlers.cmd_digest_now))
+    app.add_handler(CommandHandler("github_trending", handlers.cmd_github_trending))
 
     # --- Scheduler ---
     digest_runner = await _build_digest_runner(app)

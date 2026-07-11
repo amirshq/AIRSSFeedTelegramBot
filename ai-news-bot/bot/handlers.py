@@ -2,10 +2,11 @@
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
+import aiohttp
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
@@ -59,6 +60,14 @@ async def _reply(update: Update, text: str, parse_mode: str = ParseMode.MARKDOWN
         await update.message.reply_text(text, parse_mode=parse_mode)
 
 
+def _escape_mdv2(text: str) -> str:
+    """Escape all MarkdownV2 special characters."""
+    special = r'\_*[]()~`>#+-=|{}.!'
+    for ch in special:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 # ---------------------------------------------------------------------------
 # /start
 # ---------------------------------------------------------------------------
@@ -76,6 +85,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/enable\\_source — Re\\-enable a source\n"
         "/set\\_time — Change the daily send time\n"
         "/status — Show bot status\n"
+        "/github\\_trending — Top trending AI/ML GitHub repos\n"
         "/help — Show this help message"
     )
     await _reply(update, text)
@@ -97,6 +107,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "`/enable_source <id>` — Re\\-enable source by ID\n"
         "`/set_time <HH:MM>` — Reschedule daily digest\n"
         "`/status` — Show bot stats and next run time\n"
+        "`/github_trending` — Top trending AI/ML repos \\(past 2 weeks\\)\n"
         "`/help` — Show this message"
     )
     await _reply(update, text)
@@ -117,7 +128,6 @@ async def cmd_add_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     url = args[0]
-    # Name may contain spaces — join all middle args; last arg is type if it matches
     source_type = "rss"
     if args[-1].lower() in ("rss", "crawl"):
         source_type = args[-1].lower()
@@ -262,15 +272,79 @@ async def cmd_digest_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ---------------------------------------------------------------------------
+# /github_trending
+# ---------------------------------------------------------------------------
+
+async def cmd_github_trending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fetch trending AI/ML GitHub repos from the past 2 weeks."""
+    await _reply(update, escape_mdv2("⏳ Fetching trending GitHub repos..."))
+
+    try:
+        since = (datetime.now() - timedelta(weeks=2)).strftime("%Y-%m-%d")
+
+        queries = [
+            "artificial+intelligence",
+            "large+language+model",
+            "machine+learning",
+            "LLM",
+        ]
+
+        seen: set[int] = set()
+        repos: list[dict] = []
+
+        async with aiohttp.ClientSession() as session:
+            for q in queries:
+                url = (
+                    f"https://api.github.com/search/repositories"
+                    f"?q={q}+created:>{since}"
+                    f"&sort=stars&order=desc&per_page=5"
+                )
+                headers = {"Accept": "application/vnd.github+json"}
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        logger.warning("GitHub API returned %d for query %s", resp.status, q)
+                        continue
+                    data = await resp.json()
+                    for repo in data.get("items", []):
+                        if repo["id"] not in seen:
+                            seen.add(repo["id"])
+                            repos.append(repo)
+
+        repos = sorted(repos, key=lambda x: x["stargazers_count"], reverse=True)[:10]
+
+        if not repos:
+            await _reply(update, escape_mdv2("❌ No trending repos found."))
+            return
+
+        lines = ["⭐ *Trending AI/ML GitHub Repos* — past 2 weeks\n"]
+
+        for i, repo in enumerate(repos, 1):
+            stars = repo["stargazers_count"]
+            lang = repo.get("language") or "N/A"
+            desc = repo.get("description") or "No description"
+            desc = desc[:80] + "..." if len(desc) > 80 else desc
+            name = repo["full_name"]
+            repo_url = repo["html_url"]
+
+            lines.append(
+                f"{i}\\. [{_escape_mdv2(name)}]({repo_url})\n"
+                f"⭐ {stars:,} \\| 💻 {_escape_mdv2(lang)}\n"
+                f"_{_escape_mdv2(desc)}_\n"
+            )
+
+        await _reply(update, "\n".join(lines))
+
+    except Exception as exc:
+        logger.exception("GitHub trending error")
+        await _reply(update, escape_mdv2(f"❌ Error fetching repos: {exc}"))
+
+
+# ---------------------------------------------------------------------------
 # Pipeline (called by scheduler AND /digest_now)
 # ---------------------------------------------------------------------------
 
 async def run_digest_pipeline(app: Any) -> None:
-    """End-to-end pipeline: fetch → dedup → summarise → send.
-
-    This function is safe to call from both the scheduler and the
-    /digest_now command handler.
-    """
+    """End-to-end pipeline: fetch → dedup → summarise → send."""
     logger.info("Starting digest pipeline")
 
     sources = await get_active_sources()
