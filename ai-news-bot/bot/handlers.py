@@ -296,7 +296,7 @@ async def cmd_github_trending(update: Update, context: ContextTypes.DEFAULT_TYPE
             for q in queries:
                 url = (
                     f"https://api.github.com/search/repositories"
-                    f"?q={q}+created:>{since}"
+                    f"?q={q}+pushed:>{since}"
                     f"&sort=stars&order=desc&per_page=5"
                 )
                 headers = {"Accept": "application/vnd.github+json"}
