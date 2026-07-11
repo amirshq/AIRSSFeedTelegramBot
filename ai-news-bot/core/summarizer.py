@@ -76,7 +76,7 @@ async def build_digest(articles: list[dict[str, Any]]) -> str:
     try:
         client = _get_client()
         message = await client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5",
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
